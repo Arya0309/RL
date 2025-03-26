@@ -52,7 +52,7 @@ class Policy(nn.Module):
         self.actor_layer = nn.Linear(self.hidden_size, self.action_dim)
         self.critic_layer = nn.Linear(self.hidden_size, 1)
 
-        # This function initializes the weights of neural network layers.
+        # Define a function for Xavier uniform initialization on linear layers.
         def init_weights(m):
             if isinstance(m, nn.Linear):
                 nn.init.xavier_uniform_(m.weight)
@@ -76,7 +76,6 @@ class Policy(nn.Module):
         """
 
         ########## YOUR CODE HERE (3~5 lines) ##########
-
         hidden_1 = F.relu(self.shared_layer(state))
         hidden_2 = F.relu(self.hidden_layer(hidden_1))
         action_logits = self.actor_layer(hidden_2)
@@ -96,10 +95,14 @@ class Policy(nn.Module):
         """
 
         ########## YOUR CODE HERE (3~5 lines) ##########
+        # If the state is not a torch tensor, convert it from a numpy array, add a batch dimension.
         if not isinstance(state, torch.Tensor):
             state = torch.from_numpy(state).float().unsqueeze(0)
+        # Use the forward method to obtain action probabilities and the state value for the current state.
         action_prob, state_value = self.forward(state)
+        # Create a Categorical distribution based on the action probabilities.
         m = Categorical(action_prob)
+        # Sample an action from the distribution.
         action = m.sample()
         ########## END OF YOUR CODE ##########
 
@@ -124,14 +127,19 @@ class Policy(nn.Module):
         value_losses = []
 
         ########## YOUR CODE HERE (8-15 lines) ##########
-        gae = GAE(gamma, lambda_, None)
+        # Create an instance of GAE using the specified gamma and lambda_ values.
+        gae = GAE(gamma, lambda_)
+        # Compute the advantages by passing the list of rewards, the predicted values (extracted from saved actions), and the done flags.
         advantages = gae(
             self.rewards, [value for _, value in saved_actions], self.dones
         )
-
+        # For each saved action and its corresponding computed advantage...
         for (log_prob, value), gae in zip(saved_actions, advantages):
+            # Multiply the negative log probability by the advantage to form the policy loss component.
             policy_losses.append(gae * -log_prob)
+            # Compute the value loss as the MSE between the current value estimate and the sum of the value and the advantage (target).
             value_losses.append(nn.MSELoss()(value, torch.tensor(gae) + value))
+        # Sum all the policy losses and value losses to obtain the total loss.
         loss = torch.stack(policy_losses).sum() + torch.stack(value_losses).sum()
         ########## END OF YOUR CODE ##########
 
@@ -158,20 +166,29 @@ class GAE:
         """
 
         ########## YOUR CODE HERE (8-15 lines) ##########
+        # Initialize next_value as 0 for bootstrapping the advantage computation.
         next_value = 0
+        # Initialize the running GAE accumulator as 0.
         gae = 0
+        # Create an empty list to store computed advantages for each timestep.
         advantages = []
+        # Loop over rewards, values, and done flags in reverse order.
         for reward, value, done in zip(
             reversed(rewards), reversed(values), reversed(done)
         ):
+            # Calculate the temporal-difference error (delta) using the reward, discounted next value (if not done), and current value.
             delta = reward + self.gamma * next_value * (1 - done) - value
+            # Update the running GAE by incorporating delta and the discounted previous GAE (if not done).
             gae = delta + self.gamma * self.lambda_ * gae * (1 - done)
+            # Set next_value to the current value for the next iteration.
             next_value = value
+            # Insert the computed advantage at the beginning of the advantages list.
             advantages.insert(0, gae)
-
+        # Convert the list of advantages into a torch tensor.
         advantages = torch.tensor(advantages)
+        # Normalize the advantages by subtracting the mean and dividing by the standard deviation for stability.
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-5)
-
+        # Return the normalized advantages.
         return advantages
         ########## END OF YOUR CODE ##########
 
@@ -212,11 +229,17 @@ def train(lr=0.01):
         ########## YOUR CODE HERE (10-15 lines) ##########
         done = False
         while t < env.spec.max_episode_steps and not done:
+            # Use the model to select an action given the current state.
             action = model.select_action(state)
+            # Execute the action in the environment and receive the next state, reward, done flag, and any additional info.
             state, reward, done, _ = env.step(action)
+            # Record the reward obtained at this step.
             model.rewards.append(reward)
+            # Record the done flag for this step.
             model.dones.append(done)
+            # Accumulate the episode's total reward.
             ep_reward += reward
+            # Increment the step counter.
             t += 1
 
         optimizer.zero_grad()

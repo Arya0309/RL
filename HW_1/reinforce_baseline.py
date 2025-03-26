@@ -50,7 +50,7 @@ class Policy(nn.Module):
         self.actor_layer = nn.Linear(self.hidden_size, self.action_dim)
         self.critic_layer = nn.Linear(self.hidden_size, 1)
 
-        # This function initializes the weights of neural network layers.
+        # Define a function for Xavier uniform initialization on linear layers.
         def init_weights(m):
             if isinstance(m, nn.Linear):
                 nn.init.xavier_uniform_(m.weight)
@@ -73,11 +73,16 @@ class Policy(nn.Module):
         """
 
         ########## YOUR CODE HERE (3~5 lines) ##########
+        # Convert state to torch tensor if it's a numpy array.
         if isinstance(state, np.ndarray):
             state = torch.from_numpy(state).float()
+        # Pass state through the shared layer and apply ReLU activation.
         hidden = torch.relu(self.shared_layer(state))
+        # Pass the hidden representation through the actor layer to get action logits.
         action_logits = self.actor_layer(hidden)
+        # Apply softmax on the logits to obtain action probabilities.
         action_prob = torch.softmax(action_logits, dim=-1)
+        # Pass the hidden representation through the critic layer to get the state value.
         state_value = self.critic_layer(hidden)
         ########## END OF YOUR CODE ##########
 
@@ -93,8 +98,11 @@ class Policy(nn.Module):
         """
 
         ########## YOUR CODE HERE (3~5 lines) ##########
+        # Use the forward method to get action probabilities and state value.
         action_prob, state_value = self.forward(state)
+        # Create a Categorical distribution from the action probabilities.
         m = Categorical(action_prob)
+        # Sample an action from the distribution.
         action = m.sample()
         ########## END OF YOUR CODE ##########
 
@@ -120,18 +128,28 @@ class Policy(nn.Module):
         returns = []
 
         ########## YOUR CODE HERE (8-15 lines) ##########
+        # Loop over rewards in reverse order to compute discounted returns.
         for r in self.rewards[::-1]:
+            # Update the cumulative return R using the current reward and discounted future return.
             R = r + gamma * R
+            # Insert the computed return at the beginning of the returns list.
             returns.insert(0, R)
+        # Convert the list of returns into a torch tensor.
         returns = torch.tensor(returns)
 
+        # Normalize the returns by subtracting the mean and dividing by the standard deviation.
         returns = (returns - returns.mean()) / (returns.std() + 1e-5)
 
+        # Loop over each saved action and its corresponding normalized return.
         for (log_prob, value), R in zip(saved_actions, returns):
+            # Compute the advantage as the difference between the return and the estimated value.
             advantage = R - value.item()
+            # Calculate the policy loss as the negative log probability weighted by the advantage.
             policy_losses.append(-log_prob * advantage)
+            # Calculate the value loss using smooth L1 loss between the predicted value and the return.
             value_losses.append(F.smooth_l1_loss(value, torch.tensor([R])))
 
+        # Sum up all the policy and value losses to obtain the total loss.
         loss = torch.stack(policy_losses).sum() + torch.stack(value_losses).sum()
         ########## END OF YOUR CODE ##########
 
@@ -195,22 +213,34 @@ def train(lr=0.01):
         # For each episode, only run 9999 steps to avoid entering infinite loop during the learning process
 
         ########## YOUR CODE HERE (10-15 lines) ##########
+        # Initialize the done flag.
         done = False
+        # Loop while not done and within maximum allowed steps.
         while t < env.spec.max_episode_steps and not done:
+            # Get an action from the model (ensure state is a torch tensor).
             action = model.select_action(torch.from_numpy(state).float())
+            # Execute the action in the environment; receive new state, reward, and done flag.
             state, reward, done, _ = env.step(action)
+            # Append the reward to the model's rewards list.
             model.rewards.append(reward)
+            # Accumulate the total reward for this episode.
             ep_reward += reward
+            # Increment the timestep counter.
             t += 1
-
-        # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
+        # Zero the gradients before backpropagation.
         optimizer.zero_grad()
+        # Compute the loss using the stored rewards and actions.
         loss = model.calculate_loss()
+        # Backpropagate the loss.
         loss.backward()
+        # Update the model parameters.
         optimizer.step()
-
+        # Clear stored rewards and actions for the next episode.
         model.clear_memory()
         ########## END OF YOUR CODE ##########
+
+        # Try to use Tensorboard to record the behavior of your implementation
+        ########## YOUR CODE HERE (4-5 lines) ##########
 
         # update EWMA reward and log the results
         ewma_reward = 0.05 * ep_reward + (1 - 0.05) * ewma_reward
