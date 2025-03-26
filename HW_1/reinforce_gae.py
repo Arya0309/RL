@@ -20,7 +20,7 @@ SavedAction = namedtuple("SavedAction", ["log_prob", "value"])
 
 # Define a tensorboard writer
 current_dir = os.path.dirname(os.path.abspath(__file__))
-writer = SummaryWriter(os.path.join(current_dir, "tb_record_1"))
+writer = SummaryWriter(os.path.join(current_dir, "logs", "0.95"))
 
 
 class Policy(nn.Module):
@@ -43,14 +43,16 @@ class Policy(nn.Module):
         self.action_dim = (
             env.action_space.n if self.discrete else env.action_space.shape[0]
         )
-        self.hidden_size = 512
+        self.hidden_size = 128
         self.double()
 
         ########## YOUR CODE HERE (5~10 lines) ##########
         self.shared_layer = nn.Linear(self.observation_dim, self.hidden_size)
+        self.hidden_layer = nn.Linear(self.hidden_size, self.hidden_size)
         self.actor_layer = nn.Linear(self.hidden_size, self.action_dim)
         self.critic_layer = nn.Linear(self.hidden_size, 1)
 
+        # This function initializes the weights of neural network layers.
         def init_weights(m):
             if isinstance(m, nn.Linear):
                 nn.init.xavier_uniform_(m.weight)
@@ -74,12 +76,12 @@ class Policy(nn.Module):
         """
 
         ########## YOUR CODE HERE (3~5 lines) ##########
-        if isinstance(state, np.ndarray):
-            state = torch.from_numpy(state).float()
-        hidden = torch.relu(self.shared_layer(state))
-        action_logits = self.actor_layer(hidden)
-        action_prob = torch.softmax(action_logits, dim=-1)
-        state_value = self.critic_layer(hidden)
+
+        hidden_1 = F.relu(self.shared_layer(state))
+        hidden_2 = F.relu(self.hidden_layer(hidden_1))
+        action_logits = self.actor_layer(hidden_2)
+        action_prob = F.softmax(action_logits, dim=1)
+        state_value = self.critic_layer(hidden_2)
         ########## END OF YOUR CODE ##########
 
         return action_prob, state_value
@@ -94,6 +96,8 @@ class Policy(nn.Module):
         """
 
         ########## YOUR CODE HERE (3~5 lines) ##########
+        if not isinstance(state, torch.Tensor):
+            state = torch.from_numpy(state).float().unsqueeze(0)
         action_prob, state_value = self.forward(state)
         m = Categorical(action_prob)
         action = m.sample()
@@ -104,7 +108,7 @@ class Policy(nn.Module):
 
         return action.item()
 
-    def calculate_loss(self, gamma=0.999):
+    def calculate_loss(self, gamma=0.99, lambda_=0.95):
         """
         Calculate the loss (= policy loss + value loss) to perform backprop later
         TODO:
@@ -118,23 +122,18 @@ class Policy(nn.Module):
         saved_actions = self.saved_actions
         policy_losses = []
         value_losses = []
-        returns = []
 
         ########## YOUR CODE HERE (8-15 lines) ##########
-        for r in self.rewards[::-1]:
-            R = r + gamma * R
-            returns.insert(0, R)
-        returns = torch.tensor(returns)
+        gae = GAE(gamma, lambda_, None)
+        advantages = gae(
+            self.rewards, [value for _, value in saved_actions], self.dones
+        )
 
-        returns = (returns - returns.mean()) / (returns.std() + 1e-5)
-
-        gae = GAE(gamma, 0.95)
-        advantages = gae(self.rewards, [sa.value for sa in saved_actions], self.dones)
-
-        for (log_prob, value), R, advantage in zip(saved_actions, returns, advantages):
-            policy_losses.append(-log_prob * advantage)
-            value_losses.append(F.smooth_l1_loss(value, torch.tensor([R])))
+        for (log_prob, value), gae in zip(saved_actions, advantages):
+            policy_losses.append(gae * -log_prob)
+            value_losses.append(nn.MSELoss()(value, torch.tensor(gae) + value))
         loss = torch.stack(policy_losses).sum() + torch.stack(value_losses).sum()
+        ########## END OF YOUR CODE ##########
 
         return loss
 
@@ -146,7 +145,7 @@ class Policy(nn.Module):
 
 
 class GAE:
-    def __init__(self, gamma, lambda_, num_steps=8):
+    def __init__(self, gamma, lambda_, num_steps=None):
         self.gamma = gamma
         self.lambda_ = lambda_
         self.num_steps = num_steps  # set num_steps = None to adapt full batch
@@ -159,20 +158,21 @@ class GAE:
         """
 
         ########## YOUR CODE HERE (8-15 lines) ##########
-        T = len(rewards)
-        gae = [0] * T
-        for t in range(T):
-            gae_t = 0.0
-            discount = 1.0
-            # 從 t 開始往後計算最多 num_steps 步
-            for k in range(t, min(t + self.num_steps, T)):
-                # 注意：這裡需要處理 k+1 超出範圍的情況
-                next_value = values[k + 1] if k + 1 < len(values) else 0
-                delta = rewards[k] + self.gamma * next_value * (1 - done[k]) - values[k]
-                gae_t += discount * delta
-                discount *= self.gamma * self.lambda_
-            gae[t] = gae_t
-        return gae
+        next_value = 0
+        gae = 0
+        advantages = []
+        for reward, value, done in zip(
+            reversed(rewards), reversed(values), reversed(done)
+        ):
+            delta = reward + self.gamma * next_value * (1 - done) - value
+            gae = delta + self.gamma * self.lambda_ * gae * (1 - done)
+            next_value = value
+            advantages.insert(0, gae)
+
+        advantages = torch.tensor(advantages)
+        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-5)
+
+        return advantages
         ########## END OF YOUR CODE ##########
 
 
@@ -212,19 +212,17 @@ def train(lr=0.01):
         ########## YOUR CODE HERE (10-15 lines) ##########
         done = False
         while t < env.spec.max_episode_steps and not done:
-            action = model.select_action(torch.from_numpy(state).float())
+            action = model.select_action(state)
             state, reward, done, _ = env.step(action)
             model.rewards.append(reward)
-            model.dones.append(1 if done else 0)
+            model.dones.append(done)
             ep_reward += reward
             t += 1
 
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
         optimizer.zero_grad()
         loss = model.calculate_loss()
         loss.backward()
         optimizer.step()
-
         model.clear_memory()
         ########## END OF YOUR CODE ##########
 
@@ -271,7 +269,7 @@ def test(name, n_episodes=10):
         )
     )
 
-    render = False
+    render = True
     max_episode_len = 10000
 
     for i_episode in range(1, n_episodes + 1):

@@ -50,6 +50,7 @@ class Policy(nn.Module):
         self.actor_layer = nn.Linear(self.hidden_size, self.action_dim)
         self.critic_layer = nn.Linear(self.hidden_size, 1)
 
+        # This function initializes the weights of neural network layers.
         def init_weights(m):
             if isinstance(m, nn.Linear):
                 nn.init.xavier_uniform_(m.weight)
