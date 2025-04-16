@@ -261,7 +261,7 @@ def train(lr=0.01):
         if ewma_reward > env.spec.reward_threshold:
             if not os.path.isdir("./preTrained"):
                 os.mkdir("./preTrained")
-            torch.save(model.state_dict(), "./preTrained/CartPole_{}.pth".format(lr))
+            torch.save(model.state_dict(), "./preTrained/LunarLander_{}.pth".format(lr))
             print(
                 "Solved! Running reward is now {} and "
                 "the last episode runs to {} time steps!".format(ewma_reward, t)
@@ -303,4 +303,4 @@ if __name__ == "__main__":
     env.seed(random_seed)
     torch.manual_seed(random_seed)
     train(lr)
-    test(f"CartPole_{lr}.pth")
+    test(f"LunarLander_{lr}.pth")

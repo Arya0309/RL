@@ -234,6 +234,13 @@ def train(lr=0.01):
         model.clear_memory()
         ########## END OF YOUR CODE ##########
 
+        # update EWMA reward and log the results
+        ewma_reward = 0.05 * ep_reward + (1 - 0.05) * ewma_reward
+        print(
+            "Episode {}\tlength: {}\treward: {}\t ewma reward: {}".format(
+                i_episode, t, ep_reward, ewma_reward
+            )
+        )
         # Try to use Tensorboard to record the behavior of your implementation
         ########## YOUR CODE HERE (4-5 lines) ##########
         writer.add_scalar("training/ep_reward", ep_reward, i_episode)

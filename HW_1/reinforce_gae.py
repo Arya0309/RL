@@ -20,7 +20,7 @@ SavedAction = namedtuple("SavedAction", ["log_prob", "value"])
 
 # Define a tensorboard writer
 current_dir = os.path.dirname(os.path.abspath(__file__))
-writer = SummaryWriter(os.path.join(current_dir, "logs", "0.95"))
+writer = SummaryWriter(os.path.join(current_dir, "logs", "LunarLander_gae"))
 
 
 class Policy(nn.Module):
