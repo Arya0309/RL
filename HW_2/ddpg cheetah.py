@@ -1,7 +1,6 @@
 # Spring 2025, 535514 Reinforcement Learning
 # HW2: DDPG
 
-import d4rl
 import sys
 import gym
 import numpy as np
@@ -20,7 +19,8 @@ from torch.utils.tensorboard import SummaryWriter
 
 torch.set_default_dtype(torch.float32)
 current_dir = os.path.dirname(os.path.abspath(__file__))
-writer = SummaryWriter(os.path.join(current_dir, "logs/tb_1"))
+writer = SummaryWriter(os.path.join(current_dir, "logs_2/tb_3"))
+
 
 def soft_update(target, source, tau):
     for target_param, param in zip(target.parameters(), source.parameters()):
@@ -143,8 +143,8 @@ class DDPG(object):
         gamma=0.995,
         tau=0.0005,
         hidden_size=128,
-        lr_a=1e-4,
-        lr_c=1e-3,
+        lr_a=1e-5,
+        lr_c=1e-4,
     ):
         self.num_inputs = num_inputs
         self.action_space = action_space
@@ -234,13 +234,15 @@ class DDPG(object):
         if critic_path is not None:
             self.critic.load_state_dict(torch.load(critic_path))
 
-def train(env_name="Pendulum-v0"):
-    num_episodes = 200
+
+def train(env_name):
+    num_episodes = 500
     gamma = 0.995
-    tau = 0.002
-    hidden_size = 128
+    tau = 0.02
+    hidden_size = 64
     noise_scale = 0.3
-    batch_size = 128
+    replay_size = 100000
+    batch_size = 256
     updates_per_step = 1
     print_freq = 1
     ewma_reward = 0
@@ -252,63 +254,84 @@ def train(env_name="Pendulum-v0"):
     agent = DDPG(
         env.observation_space.shape[0], env.action_space, gamma, tau, hidden_size
     )
-
-    env = gym.make(env_name)
-    env.reset(seed=random_seed)
-    torch.manual_seed(random_seed)
-
-    dataset = d4rl.get_dataset(env)
-
-    replay_size = len(dataset['observations'])
+    ounoise = OUNoise(env.action_space.shape[0])
     memory = ReplayMemory(replay_size)
 
-    num_data = len(dataset['observations']).shape[0]
-    for i in range(num_data):
-        s = torch.FloatTensor([dataset['observations'][i]])
-        a = torch.FloatTensor([dataset['actions'][i]])
-        done_flag = dataset['terminals'][i]
-        mask = torch.FloatTensor([0.0 if done_flag == 1 else 1.0])
-        s_next = torch.FloatTensor([dataset['next_observations'][i]])
-        r = torch.FloatTensor([dataset['rewards'][i]])
-        memory.push(s, a, mask, s_next, r)
-    
-    print("Replay memory filled with {} transitions.".format(len(memory)))
+    for i_episode in range(num_episodes):
 
-    # 初始化 agent
-    agent = DDPG(env.observation_space.shape[0], env.action_space)
-    num_updates = 10000  # 可依需求設定訓練更新次數
-    batch_size = 128
-    updates = 0
+        ounoise.scale = noise_scale
+        ounoise.reset()
 
-    for update in range(num_updates):
-        batch = Transition(*zip(*memory.sample(batch_size)))
-        critic_loss, actor_loss = agent.update_parameters(batch)
-        updates += 1
-        
-        # tensorboard logging
-        writer.add_scalar("actor_loss", actor_loss, updates)
-        writer.add_scalar("critic_loss", critic_loss, updates)
-        
-        if update % 1000 == 0:
-            print(f"Update {update} | Actor loss: {actor_loss:.4f} | Critic loss: {critic_loss:.4f}")
+        # Ensure state is float32
+        state = torch.FloatTensor([env.reset()])
+        episode_reward = 0
 
-    agent.save_model(env_name, suffix="offline")
+        while True:
+            action = agent.select_action(state, ounoise)
+            next_state_raw, reward_raw, done, _ = env.step(action[0].numpy())
+            episode_reward += reward_raw
 
-    # 若需要評估，還可以開啟線上互動測試（但此處訓練為純離線模式）
-    state = env.reset()
-    test_reward = 0
-    done = False
-    while not done:
-        state_tensor = torch.FloatTensor([state])
-        action = agent.select_action(state_tensor)
-        state, reward, done, _ = env.step(action.numpy()[0])
-        test_reward += reward
-    print("Test reward:", test_reward)
+            # Convert all to float32 Tensors
+            next_state = torch.FloatTensor([next_state_raw])
+            reward = torch.FloatTensor([reward_raw])
+            mask = torch.FloatTensor([0.0 if done else 1.0])
+
+            memory.push(state, action, mask, next_state, reward)
+            state = next_state
+            total_numsteps += 1
+
+            if len(memory) > batch_size:
+                for _ in range(updates_per_step):
+                    transitions = memory.sample(batch_size)
+                    batch = Transition(*zip(*transitions))
+                    critic_loss, actor_loss = agent.update_parameters(batch)
+                    updates += 1
+
+                    # tensorboard logging
+                    writer.add_scalar("actor_loss", actor_loss, updates)
+                    writer.add_scalar("critic_loss", critic_loss, updates)
+                    writer.add_scalar("reward", episode_reward, updates)
+                    writer.add_scalar("ewma_reward", ewma_reward, updates)
+
+            if done:
+                break
+
+        rewards.append(episode_reward)
+
+        if i_episode % print_freq == 0:
+            state = torch.FloatTensor([env.reset()])
+            test_reward = 0
+            t = 0
+            while True:
+                action = agent.select_action(state)
+                next_state_raw, reward_raw, done, _ = env.step(action.numpy()[0])
+                # if i_episode != 0 and i_episode % 50 == 49:
+                #     env.render()
+                test_reward += reward_raw
+
+                next_state = torch.FloatTensor([next_state_raw])
+                state = next_state
+                t += 1
+
+                if done:
+                    break
+
+            rewards.append(test_reward)
+            ewma_reward = 0.05 * test_reward + (1 - 0.05) * ewma_reward
+            ewma_reward_history.append(ewma_reward)
+            print(
+                "Episode: {}, length: {}, reward: {:.2f}, ewma reward: {:.2f}".format(
+                    i_episode, t, test_reward, ewma_reward
+                )
+            )
+
+    agent.save_model(env_name, ".pth")
 
 
 if __name__ == "__main__":
     random_seed = 10
+    env_name = "HalfCheetah"
+    env = gym.make(env_name)
+    env.seed(random_seed)
     torch.manual_seed(random_seed)
-    np.random.seed(random_seed)
-    random.seed(random_seed)
-    train("halfcheetah-medium-v0")
+    train(env_name)
